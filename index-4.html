@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>مدرسة الرسالة</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f1f4f9;color:#17243a;font-family:Arial,Tahoma,sans-serif}
+header{background:#173b70;color:#fff;text-align:center;padding:18px}
+header h1{margin:0 0 4px;font-size:22px}
+header p{margin:0;opacity:.85}
+main{max-width:950px;margin:16px auto;padding:10px}
+.card{background:#fff;padding:16px;border-radius:14px;margin:12px 0;box-shadow:0 2px 9px #0001}
+h2,h3{color:#173b70;margin-top:0}
+input,select,textarea,button{width:100%;padding:12px;margin:6px 0;border:1px solid #ccd4df;border-radius:9px;font:inherit}
+button{background:#17477f;color:#fff;border:0;cursor:pointer}
+button:disabled{opacity:.6}
+.red{background:#c33}.green{background:#16864a}.gray{background:#687587}.orange{background:#bd7717}
+.hidden{display:none!important}
+.tabs,.actions{display:flex;gap:6px;flex-wrap:wrap}
+.tabs button,.actions button{flex:1;min-width:105px}
+.tabs button.active{background:#0d2748;outline:2px solid #8fb4e8}
+.item{padding:12px 3px;border-bottom:1px solid #e5e8ed}
+.item:last-child{border-bottom:0}
+.muted{color:#687587;font-size:13px}
+.row{display:flex;gap:8px;align-items:center}
+.row>*{flex:1}
+.smallbtn{width:auto!important;flex:none!important;padding:10px 18px}
+.preview{width:100%;border-radius:10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:5px}
+.badge{display:inline-block;font-size:12px;background:#e3ebf7;color:#173b70;border-radius:20px;padding:2px 10px;margin-inline-start:4px}
+.status{font-size:20px;font-weight:bold;margin:10px 0}
+#modal{position:fixed;inset:0;background:#0008;display:flex;align-items:center;justify-content:center;padding:16px;z-index:1000}
+.modalBox{background:#fff;border-radius:14px;padding:18px;width:100%;max-width:440px;max-height:90vh;overflow:auto}
+.chk{display:flex;align-items:center;gap:8px;margin:8px 0}
+.chk input{width:auto;margin:0}
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#17243a;color:#fff;padding:12px 18px;border-radius:10px;z-index:2000;max-width:90%;text-align:center}
+.err{color:#c33;min-height:20px}
+#loginPass{text-align:center;font-size:20px;letter-spacing:3px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Resala Private School</h1>
+  <p>أهلاً بك في مدرسة الرسالة</p>
+</header>
+
+<main>
+  <section id="login" class="card">
+    <h2>تسجيل الدخول</h2>
+    <input id="loginPass" type="password" placeholder="اكتب كلمة السر" autocomplete="current-password">
+    <button id="loginBtn" onclick="doLogin()">دخول</button>
+    <p id="loginError" class="err"></p>
+  </section>
+
+  <section id="app" class="hidden">
+    <div class="card row">
+      <div>
+        <h2 id="welcome" style="margin-bottom:4px"></h2>
+        <p id="info" class="muted" style="margin:0"></p>
+      </div>
+      <button class="gray smallbtn" onclick="logout()">خروج</button>
+    </div>
+    <div id="tabs" class="tabs"></div>
+    <div id="page"></div>
+  </section>
+</main>
+
+<div id="modal" class="hidden"></div>
+<div id="toast" class="hidden"></div>
+
+<script>
+"use strict";
+
+/* ===== إعدادات الاتصال بـ Supabase (غيّرهم هنا لو مشروعك مختلف) ===== */
+const SUPABASE_URL = "https://jatbkztipdtpkyoloktk.supabase.co";
+const SUPABASE_KEY = "sb_publishable_b7CBPva1-D_kngftEMY8Uw_elIfqNaE";
+
+/* ===== أدوات عامة ===== */
+const $ = id => document.getElementById(id);
+const esc = t => String(t ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtDate = d => new Date(d).toLocaleString("ar-EG");
+
+let token = null;
+try { token = localStorage.getItem("resala_token"); } catch(e){}
+let me = null;
+let classNames = [];
+let usersCache = [];
+let teacherList = [];
+let toastTimer = null;
+
+function toast(m){
+  const t = $("toast");
+  t.textContent = m;
+  t.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add("hidden"), 3200);
+}
+
+function errMsg(e){
+  const m = (e && e.message) || "";
+  if(m === "NETWORK") return "تعذر الاتصال بقاعدة البيانات (" + new URL(SUPABASE_URL).host + "). اتأكد من الإنترنت، ومن إن مشروع Supabase شغال وإن الرابط صحيح.";
+  if(m.includes("PASS_TAKEN")) return "كلمة السر دي مستخدمة لحساب تاني، اختار غيرها";
+  if(m.includes("WEAK")) return "كلمة السر لازم تكون 6 حروف أو أرقام على الأقل";
+  if(m.includes("HAS_STUDENTS")) return "في طلاب في الفصل ده، انقلهم لفصل تاني الأول";
+  if(m.includes("FORBIDDEN")) return "مش مسموح لك بالعملية دي";
+  if(m.includes("BAD")) return "البيانات غير صحيحة، راجعها";
+  if(m.includes("Could not find the function") || m.includes("does not exist")) return "قاعدة البيانات لسه ما اتجهزتش. شغّل ملف setup.sql في Supabase.";
+  if(m.includes("Invalid API key") || m.includes("apikey")) return "مفتاح Supabase غير صحيح";
+  return m || "حصل خطأ، حاول تاني";
+}
+
+/* اتصال مباشر بـ Supabase بدون أي مكتبة خارجية */
+async function callRpc(fn, args){
+  let res;
+  try {
+    res = await fetch(SUPABASE_URL + "/rest/v1/rpc/" + fn, {
+      method: "POST",
+      headers: { "apikey": SUPABASE_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify(args || {})
+    });
+  } catch(e){
+    throw new Error("NETWORK");
+  }
+  let body = null;
+  try { body = await res.json(); } catch(e){}
+  if(!res.ok){
+    const err = new Error((body && (body.message || body.hint)) || ("HTTP " + res.status));
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+
+async function rpc(fn, args = {}){
+  try {
+    return await callRpc(fn, { p_token: token, ...args });
+  } catch(error){
+    if((error.message || "").includes("AUTH")){
+      forceLogout();
+      throw new Error("انتهت الجلسة، سجّل الدخول من جديد");
+    }
+    throw error;
+  }
+}
+
+async function run(fn){
+  try { await fn(); } catch(e){ toast(errMsg(e)); }
+}
+
+function modal(html){
+  $("modal").innerHTML = '<div class="modalBox">' + html + '</div>';
+  $("modal").classList.remove("hidden");
+}
+function closeModal(){
+  $("modal").classList.add("hidden");
+  $("modal").innerHTML = "";
+}
+function confirmBox(msg){
+  return new Promise(res => {
+    modal(`<h3>${esc(msg)}</h3><div class="actions"><button class="red" id="cYes">تأكيد</button><button class="gray" id="cNo">إلغاء</button></div>`);
+    $("cYes").onclick = () => { closeModal(); res(true); };
+    $("cNo").onclick = () => { closeModal(); res(false); };
+  });
+}
+
+function sortClasses(list){
+  const rank = c => {
+    const m = c.match(/^(\d+)\/(\d+)\s+(.+)$/);
+    if(!m) return [9,99,99];
+    return [m[3] === "ابتدائي" ? 0 : m[3] === "إعدادي" ? 1 : 2, +m[1], +m[2]];
+  };
+  return list.slice().sort((a,b) => {
+    const x = rank(a), y = rank(b);
+    return (x[0]-y[0]) || (x[1]-y[1]) || (x[2]-y[2]);
+  });
+}
+
+function compressImage(file){
+  return new Promise((res, rej) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const k = Math.min(1, 1200 / img.width);
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * k);
+      c.height = Math.round(img.height * k);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      res(c.toDataURL("image/jpeg", 0.7));
+    };
+    img.onerror = () => rej(new Error("تعذر قراءة الصورة"));
+    img.src = url;
+  });
+}
+
+/* ===== تسجيل الدخول (بكلمة السر فقط) ===== */
+function showLogin(){
+  $("app").classList.add("hidden");
+  $("login").classList.remove("hidden");
+  $("loginPass").value = "";
+}
+
+function forceLogout(){
+  token = null; me = null;
+  try { localStorage.removeItem("resala_token"); } catch(e){}
+  showLogin();
+}
+
+async function doLogin(){
+  const password = $("loginPass").value.trim();
+  $("loginError").textContent = "";
+  if(!password){ $("loginError").textContent = "اكتب كلمة السر"; return; }
+
+  $("loginBtn").disabled = true;
+  try {
+    const data = await callRpc("app_login", { p_password: password });
+    if(data.error === "LOCKED"){ $("loginError").textContent = "محاولات كتير غلط، استنى 10 دقايق وحاول تاني"; return; }
+    if(data.error){ $("loginError").textContent = "كلمة السر غير صحيحة"; return; }
+    token = data.token;
+    me = data.user;
+    try { localStorage.setItem("resala_token", token); } catch(e){}
+    $("loginPass").value = "";
+    await showApp();
+  } catch(e){
+    $("loginError").textContent = errMsg(e);
+  } finally {
+    $("loginBtn").disabled = false;
+  }
+}
+
+async function logout(){
+  try { await callRpc("app_logout", { p_token: token }); } catch(e){}
+  forceLogout();
+}
+
+/* ===== واجهة التطبيق ===== */
+function tabsFor(){
+  if(me.role === "student") return [["schedule","الجدول"],["bus","الباص"],["news","الأخبار"],["inbox","الإشعارات"]];
+  if(me.role === "teacher"){
+    const t = [["schedule","الجدول"]];
+    if(me.is_bus) t.push(["bus","الباص"]);
+    t.push(["news","الأخبار"],["messages","الرسائل"]);
+    return t;
+  }
+  const t = [["news","الأخبار"]];
+  if(me.is_bus) t.push(["bus","الباص"]);
+  t.push(["complaints","الشكاوى"],["schedules","الجداول"],["busadmin","اشتراكات الباص"]);
+  if(me.is_super) t.push(["accounts","الحسابات"],["classes","الفصول"]);
+  return t;
+}
+
+async function showApp(){
+  $("login").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  $("welcome").textContent = "أهلاً " + me.name;
+  $("info").textContent = me.role === "student" ? "طالب - " + (me.class_name || "") :
+    me.role === "teacher" ? "معلم - " + (me.subject || "") :
+    me.is_super ? "أدمن رئيسي" : "حساب إداري";
+
+  classNames = sortClasses(await rpc("app_classes"));
+  const tabs = tabsFor();
+  $("tabs").innerHTML = tabs.map(([id,name]) => `<button data-tab="${id}" onclick="openTab('${id}')">${name}</button>`).join("");
+  openTab(tabs[0][0]);
+}
+
+async function openTab(id){
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === id));
+  const p = $("page");
+  p.innerHTML = '<div class="card muted">جاري التحميل...</div>';
+  try {
+    await ({schedule:schedulePage,bus:busPage,news:newsPage,inbox:inboxPage,messages:messagesPage,
+      complaints:complaintsPage,schedules:schedulesAdminPage,busadmin:busAdminPage,
+      accounts:accountsPage,classes:classesPage}[id])(p);
+  } catch(e){
+    p.innerHTML = `<div class="card err">${esc(errMsg(e))}</div>`;
+  }
+}
+
+/* ===== الجدول ===== */
+async function schedulePage(p){
+  const img = await rpc("app_my_schedule");
+  p.innerHTML = `<div class="card"><h2>الجدول</h2>
+    ${img ? `<img class="preview" src="${esc(img)}" alt="الجدول">` : '<p class="muted">لسه الإدارة ما رفعتش الجدول.</p>'}
+  </div>`;
+}
+
+/* ===== الباص ===== */
+async function busPage(p){
+  const b = await rpc("app_bus");
+  if(b.mode === "none"){
+    p.innerHTML = '<div class="card">' + (me.role === "student" ? "أنت غير مشترك في خدمة الباص." : "أنت لست مشرف باص.") + '</div>';
+    return;
+  }
+  if(b.mode === "student"){
+    p.innerHTML = `<div class="card"><h2>الباص</h2>
+      <p>المشرف: <b>${esc(b.supervisor)}</b></p>
+      <div class="status" style="color:${b.moved ? "#16864a" : "#c33"}">${b.moved ? "الباص اتحرك" : "الباص لم يتحرك"}</div>
+      <p>حضورك اليوم: <b>${esc(b.status)}</b></p>
+      <div class="actions">
+        <button class="green" onclick="setAtt('حاضر')">حاضر</button>
+        <button class="red" onclick="setAtt('غائب')">غائب</button>
+      </div></div>`;
+    return;
+  }
+  p.innerHTML = `<div class="card"><h2>إدارة الباص</h2>
+    <button class="${b.moved ? "green" : "red"}" onclick="toggleMove()">${b.moved ? "الباص اتحرك (اضغط للتراجع)" : "الباص لم يتحرك (اضغط عند التحرك)"}</button>
+    <p class="muted">الحالة بتتصفّر تلقائياً كل يوم جديد.</p></div>
+    <div class="card"><h3>طلاب الباص (${b.students.length})</h3>
+    ${b.students.map(s => `<div class="item">${esc(s.name)} - ${esc(s.class_name)}
+      <span class="badge" style="${s.status === "غائب" ? "background:#fbe1e1;color:#c33" : ""}">${esc(s.status)}</span></div>`).join("") || "لا يوجد طلاب."}
+    </div>`;
+}
+function setAtt(s){ run(async () => { await rpc("set_attendance", { p_status: s }); busPage($("page")); }); }
+function toggleMove(){ run(async () => { await rpc("toggle_move"); busPage($("page")); }); }
+
+/* ===== الأخبار ===== */
+async function newsPage(p){
+  const news = await rpc("app_news");
+  const isAdmin = me.role === "admin";
+  p.innerHTML = `<div class="card"><h2>أخبار المدرسة</h2>
+    ${news.map(n => `<div class="item"><b>${esc(n.title)}</b>
+      <p style="white-space:pre-wrap">${esc(n.body)}</p>
+      <span class="muted">${fmtDate(n.created_at)}</span>
+      ${isAdmin ? `<button class="red" onclick="delNews(${Number(n.id)})">حذف الخبر</button>` : ""}</div>`).join("") || '<p class="muted">لا توجد أخبار</p>'}
+    ${isAdmin ? `<hr><input id="newsTitle" placeholder="عنوان الخبر"><textarea id="newsBody" rows="4" placeholder="التفاصيل"></textarea>
+      <button onclick="addNews()">نشر الخبر</button>` : ""}</div>`;
+}
+function addNews(){
+  run(async () => {
+    const t = $("newsTitle").value.trim(), b = $("newsBody").value.trim();
+    if(!t || !b) return toast("اكتب العنوان والتفاصيل");
+    await rpc("admin_add_news", { p_title: t, p_body: b });
+    toast("تم نشر الخبر");
+    newsPage($("page"));
+  });
+}
+function delNews(id){
+  run(async () => {
+    if(!(await confirmBox("حذف الخبر؟"))) return;
+    await rpc("admin_del_news", { p_id: id });
+    newsPage($("page"));
+  });
+}
+
+/* ===== الإشعارات والشكاوى (طالب) ===== */
+async function inboxPage(p){
+  const msgs = await rpc("app_my_messages");
+  p.innerHTML = `<div class="card"><h2>الإشعارات</h2>
+    ${msgs.map(m => `<div class="item"><b>من: ${esc(m.from_name)}</b>
+      <p style="white-space:pre-wrap">${esc(m.body)}</p><span class="muted">${fmtDate(m.created_at)}</span></div>`).join("") || '<p class="muted">لا توجد إشعارات</p>'}
+  </div>
+  <div class="card"><h3>إرسال شكوى للإدارة</h3>
+    <textarea id="complaintText" rows="4" placeholder="اكتب شكواك"></textarea>
+    <button onclick="sendComplaint()">إرسال الشكوى</button></div>`;
+}
+function sendComplaint(){
+  run(async () => {
+    const t = $("complaintText").value.trim();
+    if(!t) return toast("اكتب الشكوى");
+    await rpc("submit_complaint", { p_body: t });
+    toast("تم إرسال الشكوى للإدارة");
+    $("complaintText").value = "";
+  });
+}
+
+/* ===== رسائل المعلم ===== */
+async function messagesPage(p){
+  teacherList = await rpc("teacher_students");
+  p.innerHTML = `<div class="card"><h2>رسائل الطلاب</h2>
+    ${teacherList.map((s,i) => `<div class="item row"><div>${esc(s.name)} <span class="badge">${esc(s.class_name)}</span></div>
+      <button class="smallbtn" onclick="msgDialog(${i})">إرسال رسالة</button></div>`).join("") || "لا يوجد طلاب في فصولك"}
+  </div>`;
+}
+function msgDialog(i){
+  const s = teacherList[i];
+  if(!s) return;
+  modal(`<h3>رسالة إلى ${esc(s.name)}</h3><textarea id="msgText" rows="4" placeholder="نص الرسالة"></textarea>
+    <div class="actions"><button class="green" id="msgOk">إرسال</button><button class="gray" onclick="closeModal()">إلغاء</button></div>`);
+  $("msgOk").onclick = () => run(async () => {
+    const t = $("msgText").value.trim();
+    if(!t) return toast("اكتب الرسالة");
+    await rpc("send_message", { p_student: s.id, p_body: t });
+    closeModal();
+    toast("تم إرسال الرسالة");
+  });
+}
+
+/* ===== الشكاوى (إدارة) ===== */
+async function complaintsPage(p){
+  const list = await rpc("admin_complaints");
+  p.innerHTML = `<div class="card"><h2>شكاوى الطلاب</h2>
+    ${list.map(x => `<div class="item"><b>${esc(x.student_name)}</b>
+      <p style="white-space:pre-wrap">${esc(x.body)}</p><span class="muted">${fmtDate(x.created_at)}</span></div>`).join("") || '<p class="muted">لا توجد شكاوى</p>'}
+  </div>`;
+}
+
+/* ===== رفع الجداول (إدارة) ===== */
+async function schedulesAdminPage(p){
+  usersCache = await rpc("admin_users");
+  p.innerHTML = `<div class="card"><h2>رفع الجداول</h2>
+    <select id="schType" onchange="fillSchTargets()"><option value="class">جدول فصل</option><option value="teacher">جدول معلم</option></select>
+    <select id="schTarget" onchange="loadSchPreview()"></select>
+    <div id="schPreview" class="muted"></div>
+    <input id="schFile" type="file" accept="image/*">
+    <button onclick="uploadSchedule()">رفع أو تغيير صورة الجدول</button></div>`;
+  fillSchTargets();
+}
+function fillSchTargets(){
+  const type = $("schType").value;
+  $("schTarget").innerHTML = type === "class" ?
+    classNames.map(c => `<option value="class:${esc(c)}">${esc(c)}</option>`).join("") :
+    usersCache.filter(u => u.role === "teacher").map(t => `<option value="teacher:${t.id}">${esc(t.name)} - ${esc(t.subject || "")}</option>`).join("");
+  loadSchPreview();
+}
+function loadSchPreview(){
+  run(async () => {
+    const key = $("schTarget").value;
+    if(!key){ $("schPreview").textContent = "لا توجد عناصر"; return; }
+    const img = await rpc("admin_get_schedule", { p_key: key });
+    $("schPreview").innerHTML = img ? `<img class="preview" src="${esc(img)}">` : "لا يوجد جدول مرفوع.";
+  });
+}
+function uploadSchedule(){
+  run(async () => {
+    const file = $("schFile").files[0], key = $("schTarget").value;
+    if(!file) return toast("اختر صورة");
+    if(!key) return toast("اختر الفصل أو المعلم");
+    const data = await compressImage(file);
+    await rpc("admin_set_schedule", { p_key: key, p_image: data });
+    toast("تم حفظ الجدول");
+    $("schFile").value = "";
+    loadSchPreview();
+  });
+}
+
+/* ===== اشتراكات الباص (إدارة) ===== */
+async function busAdminPage(p){
+  usersCache = await rpc("admin_users");
+  p.innerHTML = `<div class="card"><h2>اشتراكات الباص</h2>
+    <select id="baClass" onchange="renderBusAdmin()"><option value="">كل الفصول</option>${classNames.map(c => `<option>${esc(c)}</option>`).join("")}</select>
+    <div id="baList"></div></div>`;
+  renderBusAdmin();
+}
+function renderBusAdmin(){
+  const cls = $("baClass").value;
+  const sups = usersCache.filter(u => u.is_bus);
+  const students = usersCache.filter(u => u.role === "student" && (!cls || u.class_name === cls));
+  $("baList").innerHTML = students.map(s => `<div class="item"><b>${esc(s.name)}</b> <span class="badge">${esc(s.class_name || "")}</span>
+    <select onchange="setBus('${s.id}', this.value)"><option value="">غير مشترك</option>
+    ${sups.map(u => `<option value="${u.id}" ${u.id === s.bus_supervisor ? "selected" : ""}>${esc(u.name)}</option>`).join("")}</select></div>`).join("") || "لا يوجد طلاب.";
+}
+function setBus(studentId, supId){
+  run(async () => {
+    await rpc("admin_set_bus", { p_student: studentId, p_sup: supId || null });
+    const s = usersCache.find(u => u.id === studentId);
+    if(s) s.bus_supervisor = supId || null;
+    toast("تم الحفظ");
+  });
+}
+
+/* ===== إدارة الفصول (أدمن رئيسي) ===== */
+async function classesPage(p){
+  classNames = sortClasses(await rpc("app_classes"));
+  p.innerHTML = `<div class="card"><h2>إدارة الفصول</h2>
+    <p class="muted">اضغط على فصل لحذفه (لازم يكون فاضي من الطلاب):</p>
+    <div class="grid">${classNames.map((c,i) => `<button class="gray" onclick="removeClass(${i})">${esc(c)} ✕</button>`).join("")}</div>
+    <hr><h3>إضافة فصل</h3>
+    <select id="ncStage"><option>ابتدائي</option><option>إعدادي</option></select>
+    <input id="ncYear" type="number" min="1" max="6" placeholder="السنة الدراسية (1 إلى 6)">
+    <input id="ncSection" type="number" min="1" placeholder="رقم الفصل">
+    <button class="green" onclick="addClass()">إضافة الفصل</button></div>`;
+}
+function addClass(){
+  run(async () => {
+    const stage = $("ncStage").value, y = parseInt($("ncYear").value, 10), s = parseInt($("ncSection").value, 10);
+    const max = stage === "ابتدائي" ? 6 : 3;
+    if(!y || !s || y < 1 || y > max || s < 1) return toast("اكتب سنة من 1 إلى " + max + " ورقم فصل صحيح");
+    const name = y + "/" + s + " " + stage;
+    if(classNames.includes(name)) return toast("الفصل موجود بالفعل");
+    await rpc("admin_add_class", { p_name: name });
+    toast("تمت إضافة " + name);
+    classesPage($("page"));
+  });
+}
+function removeClass(i){
+  run(async () => {
+    const name = classNames[i];
+    if(!name || !(await confirmBox("حذف الفصل " + name + "؟"))) return;
+    await rpc("admin_del_class", { p_name: name });
+    toast("تم حذف الفصل");
+    classesPage($("page"));
+  });
+}
+
+/* ===== إدارة الحسابات (أدمن رئيسي) ===== */
+let accRole = "student", accClass = "", accSearch = "";
+
+async function accountsPage(p){
+  usersCache = await rpc("admin_users");
+  p.innerHTML = `<div class="card"><h2>الحسابات</h2>
+    <p class="muted">كل حساب بيدخل بكلمة سر خاصة بيه بس (من غير اسم)، فلازم كل كلمة سر تكون مختلفة. كلمات السر مخفية ومش بتظهر لأي حد، حتى ليك. لو مستخدم نسيها، غيّرها له من "تعديل".</p>
+    <button class="green" onclick="accountForm(null)">+ إضافة حساب جديد</button>
+    <div class="tabs" id="accTabs">
+      <button data-r="student" onclick="setAccRole('student')">الطلاب</button>
+      <button data-r="teacher" onclick="setAccRole('teacher')">المعلمون</button>
+      <button data-r="admin" onclick="setAccRole('admin')">الإداريون</button>
+    </div>
+    <div id="accFilters">
+      <select id="accClass" onchange="accClass=this.value;renderAccounts()"><option value="">كل الفصول</option>${classNames.map(c => `<option>${esc(c)}</option>`).join("")}</select>
+    </div>
+    <input id="accSearch" placeholder="بحث بالاسم" oninput="accSearch=this.value;renderAccounts()">
+    <div id="accList"></div></div>`;
+  $("accClass").value = accClass;
+  $("accSearch").value = accSearch;
+  renderAccounts();
+}
+function setAccRole(r){ accRole = r; renderAccounts(); }
+function renderAccounts(){
+  document.querySelectorAll("#accTabs button").forEach(b => b.classList.toggle("active", b.dataset.r === accRole));
+  $("accFilters").classList.toggle("hidden", accRole !== "student");
+  const q = accSearch.trim().toLowerCase();
+  const list = usersCache.filter(u => u.role === accRole &&
+    (accRole !== "student" || !accClass || u.class_name === accClass) &&
+    (!q || u.name.toLowerCase().includes(q)));
+  $("accList").innerHTML = (list.map(u => `<div class="item">
+    <b>${esc(u.name)}</b>
+    ${u.is_super ? '<span class="badge">أدمن رئيسي</span>' : ""}${u.is_bus ? '<span class="badge">مشرف باص</span>' : ""}
+    <p class="muted" style="margin:4px 0">
+      ${u.role === "student" ? esc(u.class_name || "") : ""}
+      ${u.role === "teacher" ? esc(u.subject || "") + " | " + esc((u.classes || []).join("، ")) : ""}</p>
+    <div class="actions">
+      <button class="orange" onclick="accountForm('${u.id}')">تعديل</button>
+      ${u.is_super ? "" : `<button class="red" onclick="deleteAccount('${u.id}')">حذف</button>`}
+    </div></div>`).join("") || '<p class="muted">لا توجد حسابات.</p>') +
+    `<p class="muted">العدد: ${list.length}</p>`;
+}
+
+function genPassword(){
+  const arr = new Uint32Array(8);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, n => n % 10).join("");
+}
+
+function accountForm(id){
+  const u = id ? usersCache.find(x => x.id === id) : null;
+  const role = u ? u.role : accRole;
+  const sups = usersCache.filter(x => x.is_bus && (!u || x.id !== u.id));
+  modal(`<h3>${u ? "تعديل حساب" : "إضافة حساب"}</h3>
+    <label class="muted">نوع الحساب</label>
+    <select id="fRole" ${u ? "disabled" : ""} onchange="toggleRoleFields()">
+      <option value="student">طالب</option><option value="teacher">معلم</option><option value="admin">إداري</option></select>
+    <label class="muted">الاسم</label><input id="fName" value="${esc(u ? u.name : "")}">
+    <label class="muted">${u ? "كلمة سر جديدة (اتركها فاضية لو مش عايز تغيرها)" : "كلمة السر (6 حروف أو أرقام على الأقل)"}</label>
+    <div class="row"><input id="fPass" autocomplete="off" placeholder="كلمة السر">
+    <button type="button" class="gray smallbtn" onclick="$('fPass').value=genPassword()">توليد</button></div>
+
+    <div id="fStudent">
+      <label class="muted">الفصل</label>
+      <select id="fClass">${classNames.map(c => `<option ${u && u.class_name === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
+      <label class="muted">الباص</label>
+      <select id="fBus"><option value="">غير مشترك</option>${sups.map(s => `<option value="${s.id}" ${u && u.bus_supervisor === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
+    </div>
+    <div id="fTeacher">
+      <label class="muted">المادة</label><input id="fSubject" value="${esc(u ? u.subject || "" : "")}">
+      <label class="muted">الفصول</label>
+      <div class="grid">${classNames.map(c => `<label class="chk"><input type="checkbox" class="fCls" value="${esc(c)}" ${u && (u.classes || []).includes(c) ? "checked" : ""}> ${esc(c)}</label>`).join("")}</div>
+    </div>
+    <label class="chk" id="fBusChk"><input type="checkbox" id="fIsBus" ${u && u.is_bus ? "checked" : ""}> مشرف باص</label>
+
+    <div class="actions"><button class="green" id="fSave">حفظ</button><button class="gray" onclick="closeModal()">إلغاء</button></div>`);
+  $("fRole").value = role;
+  toggleRoleFields();
+  $("fSave").onclick = () => saveAccount(u ? u.id : null, role);
+}
+function toggleRoleFields(){
+  const r = $("fRole").value;
+  $("fStudent").classList.toggle("hidden", r !== "student");
+  $("fTeacher").classList.toggle("hidden", r !== "teacher");
+  $("fBusChk").classList.toggle("hidden", r === "student");
+}
+function saveAccount(id, oldRole){
+  run(async () => {
+    const r = id ? oldRole : $("fRole").value;
+    const name = $("fName").value.trim(), pass = $("fPass").value.trim();
+    if(!name) return toast("اكتب الاسم");
+    if(!id && pass.length < 6) return toast("كلمة السر 6 على الأقل");
+    if(pass && pass.length < 6) return toast("كلمة السر 6 على الأقل");
+    await rpc("admin_save_user", {
+      p_id: id, p_role: r, p_name: name, p_password: pass,
+      p_class: r === "student" ? $("fClass").value : null,
+      p_subject: r === "teacher" ? $("fSubject").value.trim() : null,
+      p_classes: r === "teacher" ? Array.from(document.querySelectorAll(".fCls:checked")).map(x => x.value) : [],
+      p_is_bus: r === "student" ? false : $("fIsBus").checked,
+      p_bus: r === "student" ? ($("fBus").value || null) : null
+    });
+    closeModal();
+    accRole = r;
+    toast(id ? "تم حفظ التعديل" : "تم إنشاء الحساب. سجّل كلمة السر وسلّمها للمستخدم");
+    accountsPage($("page"));
+  });
+}
+function deleteAccount(id){
+  run(async () => {
+    const u = usersCache.find(x => x.id === id);
+    if(!u || !(await confirmBox("حذف حساب " + u.name + "؟"))) return;
+    await rpc("admin_delete_user", { p_id: id });
+    toast("تم حذف الحساب");
+    accountsPage($("page"));
+  });
+}
+
+/* ===== بدء التشغيل ===== */
+document.addEventListener("keydown", e => {
+  if(e.key === "Enter" && !$("login").classList.contains("hidden")) doLogin();
+});
+
+(async function boot(){
+  if(!token) return;
+  try {
+    me = await rpc("app_me");
+    await showApp();
+  } catch(e){
+    showLogin();
+    if((e.message || "") === "NETWORK") $("loginError").textContent = errMsg(e);
+  }
+})();
+</script>
+</body>
+</html>
